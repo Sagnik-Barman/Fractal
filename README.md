@@ -75,7 +75,61 @@ Design decisions worth knowing about:
   distribution is. Judge a fit by its implied moments and quantiles, which is
   what the bands actually depend on — not by the parameter values.
 
-### 2. Correctness fixes
+### 2. `RecFIF.py` — the interpolant now interpolates
+
+A fractal interpolation function is *defined* by passing through its data. The
+original construction did not.
+
+| d_k | max knot error, % of data range |
+|---|---|
+| 0.00 | 0.09% (grid resolution) |
+| 0.30 | 0.88% |
+| 0.60 | 15.2% |
+| 0.90 | 174.8% |
+| 0.99 | 963.2% |
+
+The error scaled with `d_k` and did **not** shrink with more iterations or a finer
+grid — 100 iterations on an 800-point grid gave 11.27%; 3000 on 8000 points still
+gave 9.87%. It was a property of the fixed point of the implemented operator, not a
+convergence failure.
+
+**Mechanism.** Writing `T` for the Read-Bajraktarevic operator,
+
+```
+(Tf)(t_{k-1}) = c_k*t_l + d_k*f(t_l) + e_k = y_{k-1} + d_k*( f(t_l) - y_l )
+```
+
+using the endpoint condition `c_k*t_l + d_k*y_l + e_k = y_{k-1}`. So `T` maps
+interpolating functions to interpolating functions, it is a contraction with factor
+`max|d_k| < 1`, and the interpolating set is closed — its unique fixed point
+interpolates exactly. That is a theorem about the *exact* operator, and a numerical
+implementation only inherits it if `f(t_l)` is represented exactly at the window
+endpoints. The uniform evaluation grid did not contain the knots, so `f(t_l)`
+carried an interpolation error, the residual `d_k*(f(t_l) - y_l)` was non-zero at
+every iteration, and it was amplified rather than damped.
+
+**Fix.** Put every knot on the evaluation grid, snap pre-images landing on a knot to
+that knot exactly, and evaluate `T` in pull-back form so each grid point is written
+by exactly one map — which also removes the deposit-and-average step and its
+zero-masking bug (`deposited != 0.0` treated a legitimate zero as "no contribution").
+
+**Result:** knot error at machine precision for every `d_k`, `d_k = 0` collapses to
+exact linear interpolation, and the basis property `omega_i(t_j) = delta_ij` — which
+the whole weighted-CF noise propagation rests on — goes from a maximum error of
+**0.672** to **8.9e-16**. Roughness still grows with `d_k` (total variation 14.8 →
+52.4 → 548.8 → 4151.7 for d = 0, 0.3, 0.6, 0.9), so the construction is still
+fractal; it is now also an interpolation.
+
+`build_recurrent_fif_legacy` keeps the original behaviour so earlier results remain
+reproducible. `test_recfif.py` pins all of the above (7 tests).
+
+> **`d_vec_opt.npy` is now stale.** It was tuned by minimising MAPE against the
+> *broken* builder, so the tuner was partly suppressing the defect by driving `d_k`
+> small — median 0.297, with 86.8% of values below 0.5, which puts the graph close
+> to its piecewise-linear limit. Re-tune with `simple_tuner` before reading anything
+> into the fitted roughness. All coverage results below predate the fix.
+
+### 3. Correctness fixes
 
 - **`main.py` could not run on any machine but the original author's.** It
   loaded the cached parameters from a hardcoded absolute path,
@@ -98,7 +152,7 @@ Design decisions worth knowing about:
 - **A command-line interface** so runs are reproducible without editing source,
   and `show_plot` / `save_plot` so the pipeline can run headless.
 
-### 3. `test_cts_fit.py` — offline test suite (new)
+### 4. `test_cts_fit.py` and `test_recfif.py` — offline test suites (new)
 
 Six tests that need no network access:
 
@@ -111,9 +165,10 @@ Six tests that need no network access:
 
 ```bash
 python test_cts_fit.py     # Passed: 6/6
+python test_recfif.py      # Passed: 7/7
 ```
 
-### 4. Honest out-of-sample evaluation
+### 5. Honest out-of-sample evaluation
 
 `noise_fit_fraction` fits the CTS parameters on a leading slice and reports
 coverage separately on the held-out tail:
@@ -141,7 +196,8 @@ Requires Python 3.11+ and network access to Yahoo Finance for the price download
 ## Usage
 
 ```bash
-python test_cts_fit.py                        # offline tests
+python test_recfif.py                         # interpolant correctness
+python test_cts_fit.py                        # estimator + end-to-end
 python main.py --sample-every 4 --ncos 512    # fast smoke run
 python main.py                                # full run
 python main.py --noise-fit-fraction 0.7       # with held-out coverage
@@ -190,13 +246,82 @@ Pipeline, in order:
 
 ## Results
 
-Run it and fill this section in with your own numbers. The figures in earlier
-versions of this README (coverage, knot counts, runtimes) were carried over
-from upstream without re-verification, so they are deliberately not repeated
-here.
+Weekly NIFTY 50, 2007-09-21 to 2022-01-21: 749 weeks, 380 extrema knots. CTS
+parameters fitted on the first 524 weeks (70%), coverage then scored on the
+remaining 225.
 
-What to report: overall coverage, in-sample vs held-out coverage at
-`--noise-fit-fraction 0.7`, the fitted CTS parameters, and the KS statistic.
+```
+python evaluate_coverage.py --noise-fit-fraction 0.7 --no-show
+```
+
+### Fitted CTS parameters
+
+| | |
+|---|---|
+| alpha | 1.48142 |
+| C+ / C- | 0.00113541 / 0.000859029 |
+| lambda+ / lambda- | 16.9112 / 8.56236 |
+| mu | 0.00825319 |
+| KS statistic | 0.0290 (p = 0.766) |
+
+Two sanity checks pass. `alpha` lands at 1.481 against the 1.4 reported in the
+source paper — an independent estimator agreeing with the published value.
+And `lambda- < lambda+` by roughly a factor of two, i.e. the left tail is
+tempered at half the rate of the right, so the fit has recovered the negative
+skew of equity index returns from the data rather than being told about it.
+
+Fitted mean and standard deviation reproduce the sample to within 0.002 sample
+sd and 0.3% respectively. Skewness and excess kurtosis overshoot (-0.55 vs
+-0.19, and 7.41 vs 4.05): the characteristic-function objective weights the
+centre of the distribution, so the tails are extrapolated rather than fitted.
+
+### Coverage
+
+| | weeks | coverage |
+|---|---|---|
+| overall | 749 | **95.06%** |
+| in-sample | 524 | 94.85% |
+| held out | 225 | **95.56%** |
+
+Against a nominal 95% that looks close to perfect, and the held-out number sits
+0.08 corrected standard errors from target. **Do not read it that way.** The
+aggregate is an average of two regimes that are each badly calibrated:
+
+| | weeks | coverage |
+|---|---|---|
+| 2007-2009 and 2020 | 171 | **80.7%** |
+| every other year | 578 | **99.3%** |
+
+In the calm decade the bands are far too wide; in crises they are far too
+narrow. The two errors cancel to 95.06%.
+
+The formal tests agree. A Wald-Wolfowitz runs test gives 46 runs against 71.3
+expected under independence (z = -9.93, p < 1e-5) — misses arrive in bunches,
+not scattered. The miss indicator has lag-1 autocorrelation +0.352, which puts
+the effective sample size at 359 of 749 and the true standard error at 1.15 pp
+rather than the naive binomial 0.80 pp. The longest run of consecutive misses
+is 5 weeks, starting 2009-03-20.
+
+Direction is also one-sided: of 37 misses, **29 are above the band and 8 below**
+(z = +3.45 against a symmetric split). That is a bias in where the band is
+centred, not symmetric tail thinness.
+
+### What this means
+
+The model carries a single time-invariant noise law, and markets cluster their
+volatility. No static distribution can serve both 2009 and 2014. A headline
+coverage figure near nominal is therefore weak evidence on its own — the
+regime split and the runs test are what tell you whether the bands mean
+anything week to week.
+
+This is direct motivation for the regime-switching direction already present
+upstream in `fcc_gts_regime_pipeline.py`. Conditioning the CTS parameters on a
+volatility or FCC regime, rather than fitting one set across fifteen years, is
+the obvious next step.
+
+`evaluate_coverage.py` also attributes each miss to either the interpolant being
+mis-centred or a genuine tail event, by re-centring the same quantiles on the
+actual Open. Run it to see the split for this configuration.
 
 ## Known limitations
 
