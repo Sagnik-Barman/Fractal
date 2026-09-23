@@ -123,11 +123,32 @@ fractal; it is now also an interpolation.
 `build_recurrent_fif_legacy` keeps the original behaviour so earlier results remain
 reproducible. `test_recfif.py` pins all of the above (7 tests).
 
-> **`d_vec_opt.npy` is now stale.** It was tuned by minimising MAPE against the
-> *broken* builder, so the tuner was partly suppressing the defect by driving `d_k`
-> small — median 0.297, with 86.8% of values below 0.5, which puts the graph close
-> to its piecewise-linear limit. Re-tune with `simple_tuner` before reading anything
-> into the fitted roughness. All coverage results below predate the fix.
+> **Was the tuned roughness an artefact of the defect?** It was reasonable to
+> suspect so: `simple_tuner` minimises MAPE, and since large `d_k` broke the old
+> builder, the tuner had an incentive to keep `d_k` small.
+>
+> **Measured on weekly NIFTY (380 knots): no.** Two re-tunes against the fixed
+> builder, from different starting points:
+>
+> | | median d_k | sum abs d_k | box dim | MAPE (full res) |
+> |---|---|---|---|---|
+> | shipped vector | 0.2968 | 132.7 | 1.823 | 0.7981% |
+> | cold start from heuristic | 0.3162 | 185.2 | 1.879 | 0.8532% |
+> | warm start from shipped | **0.2091** | 119.8 | 1.806 | **0.5762%** |
+>
+> Roughness does not jump when the defect is removed — it drops slightly. The
+> shipped values were a genuine fit to the data, not the tuner dodging a bug.
+>
+> **But the shipped vector was under-tuned.** A warm-started two-pass sweep cuts
+> MAPE by 28%, with 320 then 289 of 379 coordinates still moving. `simple_tuner`
+> is greedy coordinate descent, so a cold start from the heuristic lands in a worse
+> local optimum than the incumbent already occupies — which is why `retune.py`
+> warm-starts by default and refuses to write a vector that scores worse.
+>
+> Note also that "median `d_k` ~ 0.3" is **not** close to piecewise linear. Box
+> dimension goes as `D = 1 + log(sum|d_k|)/log(N)`, and `sum|d_k| = 132.7` over
+> `N = 379` maps gives `D ~ 1.82` — a genuinely rough graph. The dimension depends
+> on the sum, not the median.
 
 ### 3. Correctness fixes
 
@@ -198,6 +219,7 @@ Requires Python 3.11+ and network access to Yahoo Finance for the price download
 ```bash
 python test_recfif.py                         # interpolant correctness
 python test_cts_fit.py                        # estimator + end-to-end
+python retune.py                              # re-tune d_vec (required once)
 python main.py --sample-every 4 --ncos 512    # fast smoke run
 python main.py                                # full run
 python main.py --noise-fit-fraction 0.7       # with held-out coverage
@@ -246,12 +268,13 @@ Pipeline, in order:
 
 ## Results
 
-Weekly NIFTY 50, 2007-09-21 to 2022-01-21: 749 weeks, 380 extrema knots. CTS
-parameters fitted on the first 524 weeks (70%), coverage then scored on the
-remaining 225.
+Weekly NIFTY 50, 2007-09-21 to 2022-01-21: 749 weeks, 380 extrema knots. `d_vec`
+re-tuned against the corrected builder (MAPE 0.576%). CTS parameters fitted on the
+first 524 weeks, coverage scored on all 749.
 
 ```
-python evaluate_coverage.py --noise-fit-fraction 0.7 --no-show
+python retune.py
+python evaluate_coverage.py --noise-fit-fraction 0.7 --save-plot results/bands.png
 ```
 
 ### Fitted CTS parameters
@@ -264,64 +287,101 @@ python evaluate_coverage.py --noise-fit-fraction 0.7 --no-show
 | mu | 0.00825319 |
 | KS statistic | 0.0290 (p = 0.766) |
 
-Two sanity checks pass. `alpha` lands at 1.481 against the 1.4 reported in the
-source paper — an independent estimator agreeing with the published value.
-And `lambda- < lambda+` by roughly a factor of two, i.e. the left tail is
-tempered at half the rate of the right, so the fit has recovered the negative
-skew of equity index returns from the data rather than being told about it.
+Two independent checks pass. `alpha` lands at 1.481 against the 1.4 reported in the
+source paper, from an estimator that never saw that value. And
+`lambda- < lambda+` by roughly a factor of two — the left tail is tempered at half
+the rate of the right, so the fit recovered the negative skew of equity index
+returns from the data rather than being told about it.
 
-Fitted mean and standard deviation reproduce the sample to within 0.002 sample
-sd and 0.3% respectively. Skewness and excess kurtosis overshoot (-0.55 vs
--0.19, and 7.41 vs 4.05): the characteristic-function objective weights the
-centre of the distribution, so the tails are extrapolated rather than fitted.
+Fitted mean and standard deviation reproduce the sample to within 0.002 sample sd
+and 0.3%. Skewness and excess kurtosis overshoot (-0.55 against -0.19, and 7.41
+against 4.05): the characteristic-function objective weights the centre of the
+distribution, so the tails are extrapolated rather than fitted.
 
-### Coverage
+### Coverage: the aggregate is meaningless
 
-| | weeks | coverage |
+| | weeks | coverage | z vs nominal |
+|---|---|---|---|
+| overall | 749 | 94.53% | -0.41 |
+| in-sample | 524 | 93.70% | -0.93 |
+| held out | 225 | 96.44% | +0.68 |
+
+All within one standard error of the nominal 95%. **That tells you almost nothing.**
+Split the same weeks by trailing realised volatility:
+
+| regime | weeks | coverage | z vs nominal |
+|---|---|---|---|
+| low volatility | 250 | **100.0%** | **+2.49** |
+| mid volatility | 249 | 99.2% | +2.08 |
+| high volatility | 250 | **84.4%** | **-5.27** |
+
+An honest 95% interval is 95% in *every* regime. This one is 100% when markets are
+calm — the bands are far too wide, and not one week in 250 falls outside — and
+84.4% when they are stressed. A 15.6 pp spread. The errors cancel to 94.53%.
+
+Per calendar year the same thing: 2010 through 2019 run at 96-100%, while 2007
+falls to 73.3%, 2008 and 2009 to 75.0%, and 2020 to 86.5%.
+
+z-scores use dependence-corrected standard errors. The miss indicator has lag-1
+autocorrelation +0.3605, giving an effective sample of 352 of 749 weeks, so the
+true standard error is 1.16 pp rather than the naive binomial 0.80 pp.
+
+### Misses cluster and lean one way
+
+A Wald-Wolfowitz runs test gives **50 runs against 78.5 expected** under
+independence, z = -10.13, p < 1e-5. Misses arrive in bunches. The longest run is
+5 consecutive weeks from 2008-12-12.
+
+Direction: of 41 misses, **29 fall above the band and 12 below** (z = +2.65 against
+a symmetric split). Symmetric tail thinness would miss on both sides; a one-sided
+pattern means the band centre is biased.
+
+### What causes a miss
+
+`evaluate_coverage.py` re-centres each band's quantiles on the *actual* Open. A miss
+that disappears was an interpolation failure; one that survives is a genuine tail
+event.
+
+| cause | misses | share |
 |---|---|---|
-| overall | 749 | **95.06%** |
-| in-sample | 524 | 94.85% |
-| held out | 225 | **95.56%** |
+| interpolant mis-centred | 14 | 34% |
+| genuine tail event | 27 | 66% |
 
-Against a nominal 95% that looks close to perfect, and the held-out number sits
-0.08 corrected standard errors from target. **Do not read it that way.** The
-aggregate is an average of two regimes that are each badly calibrated:
+Interpolation error is **4.4x higher in miss weeks than in hit weeks** (2.121%
+against 0.487%, with 0.576% across all weeks), so it is concentrated exactly where
+the bands fail. Re-centring every band on the true Open would lift coverage from
+94.53% to 95.46%.
 
-| | weeks | coverage |
+So roughly a third of the problem is the interpolant and two thirds is the noise
+model being too narrow under stress.
+
+### Effect of re-tuning
+
+Re-tuning `d_vec` cut interpolant MAPE from 0.798% to 0.576% (-28%):
+
+| | before | after |
 |---|---|---|
-| 2007-2009 and 2020 | 171 | **80.7%** |
-| every other year | 578 | **99.3%** |
+| overall | 95.06% | 94.53% |
+| held out | 95.56% | 96.44% |
+| misses above / below | 29 / 8 | 29 / 12 |
+| share above | 78% | 71% |
+| runs-test z | -9.93 | -10.13 |
 
-In the calm decade the bands are far too wide; in crises they are far too
-narrow. The two errors cancel to 95.06%.
-
-The formal tests agree. A Wald-Wolfowitz runs test gives 46 runs against 71.3
-expected under independence (z = -9.93, p < 1e-5) — misses arrive in bunches,
-not scattered. The miss indicator has lag-1 autocorrelation +0.352, which puts
-the effective sample size at 359 of 749 and the true standard error at 1.15 pp
-rather than the naive binomial 0.80 pp. The longest run of consecutive misses
-is 5 weeks, starting 2009-03-20.
-
-Direction is also one-sided: of 37 misses, **29 are above the band and 8 below**
-(z = +3.45 against a symmetric split). That is a bias in where the band is
-centred, not symmetric tail thinness.
+A better interpolant reduced the one-sidedness (z +3.45 to +2.65) without removing
+it, which is consistent with the attribution above: the interpolant was part of the
+story, not all of it. The clustering did not improve at all, because it never had
+anything to do with the interpolant.
 
 ### What this means
 
 The model carries a single time-invariant noise law, and markets cluster their
-volatility. No static distribution can serve both 2009 and 2014. A headline
-coverage figure near nominal is therefore weak evidence on its own — the
-regime split and the runs test are what tell you whether the bands mean
-anything week to week.
+volatility. No static distribution serves both 2009 and 2014. The headline coverage
+figure is an average over regimes in which the bands are separately far too wide and
+far too narrow, and on its own it is close to uninformative — the regime split and
+the runs test are what say whether the bands mean anything week to week.
 
-This is direct motivation for the regime-switching direction already present
-upstream in `fcc_gts_regime_pipeline.py`. Conditioning the CTS parameters on a
-volatility or FCC regime, rather than fitting one set across fifteen years, is
-the obvious next step.
-
-`evaluate_coverage.py` also attributes each miss to either the interpolant being
-mis-centred or a genuine tail event, by re-centring the same quantiles on the
-actual Open. Run it to see the split for this configuration.
+This is direct motivation for conditioning the CTS parameters on a volatility or FCC
+regime, which is the direction `fcc_gts_regime_pipeline.py` already points in.
 
 ## Known limitations
 

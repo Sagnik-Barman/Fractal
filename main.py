@@ -60,11 +60,8 @@ def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_it
         d_vec = load_d_vec()
         if d_vec is not None:
             print(f"Loaded pre-tuned d_vec from {DVEC_PATH.name} ({len(d_vec)} entries).")
-            print("  NOTE: this cached vector was tuned against the pre-fix RecFIF")
-            print("  builder, which did not interpolate its own knots. The tuner was")
-            print("  therefore partly compensating for that defect by driving d_k")
-            print("  small (median 0.30). Re-tune with simple_tuner for results that")
-            print("  reflect the corrected construction.")
+            print("  Re-tune with retune.py if the date range, extrema order or m")
+            print("  has changed since this vector was fitted.")
     else:
         print(f"Using caller-supplied d_vec ({len(d_vec)} entries).")
 
