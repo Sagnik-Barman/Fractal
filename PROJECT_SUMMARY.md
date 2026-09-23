@@ -1,5 +1,11 @@
 # RFIF Project - Complete Documentation Package
 
+> **Note:** this is an upstream document, kept for history. It predates the
+> parameter-estimation work and the correctness fixes, and some of its claims —
+> notably the test results and the "ready for use" status — were written before
+> the pipeline was verified to run end to end. **See [README.md](README.md) for
+> the current state of the project, its attribution, and its known limitations.**
+
 ## 📋 Project Overview
 
 This repository contains a complete implementation of **Recurrent Fractal Interpolation Functions (RFIF)** for financial time series modeling with Generalized Tempered Stable noise processes, specifically applied to NIFTY index data.
