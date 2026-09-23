@@ -8,9 +8,12 @@ seaborn>=0.13.0          # used by fcc.py; was missing from this list
 # Financial data
 yfinance>=0.2.60
 
-# Performance and utilities
-numba>=0.61.0
-tqdm>=4.67.0
+# Removed: numba and tqdm were listed here but are not imported anywhere in the
+# codebase. numba additionally pins older numpy releases, so it could fail to
+# install (or silently downgrade numpy) alongside the numpy>=2.2 required above.
+# Re-add numba only together with the code that actually uses it.
+# numba>=0.61.0
+# tqdm>=4.67.0
 
 # Optional: Additional dependencies for enhanced functionality
 # beautifulsoup4>=4.13.0  # For web scraping if needed

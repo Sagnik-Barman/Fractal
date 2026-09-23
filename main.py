@@ -191,6 +191,9 @@ def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_it
                     label='CTS fit / hold-out split')
     plt.legend(); plt.title(f'Per-week CTS propagation — Coverage: {coverage:.2f}%')
     if save_plot:
+        # Create the parent directory if it does not exist, so --save-plot
+        # results/bands.png works on a fresh clone without a manual mkdir.
+        Path(save_plot).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_plot, dpi=150, bbox_inches='tight')
         print(f"Figure written to {save_plot}")
     if show_plot:

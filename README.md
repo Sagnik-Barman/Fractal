@@ -90,6 +90,11 @@ Design decisions worth knowing about:
 - **`globals()` lookups replaced with real parameters.** `d_vec` and
   `params_noise` are now function arguments with a sensible resolution order.
 - **O(n²) membership test** in the sampled-weeks fill replaced with a set lookup.
+- **Dependency list corrected.** `seaborn` is imported by `fcc.py` but was never
+  listed; `numba` and `tqdm` were listed but are imported nowhere. `numba` pins
+  older numpy releases, so it could fail to install or silently downgrade numpy
+  against the `numpy>=2.2` requirement alongside it. (Earlier documentation
+  claimed Numba JIT compilation — there is no numba code in the repository.)
 - **A command-line interface** so runs are reproducible without editing source,
   and `show_plot` / `save_plot` so the pipeline can run headless.
 
