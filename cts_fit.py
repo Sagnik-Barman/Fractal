@@ -721,6 +721,30 @@ def fit_cts(
             problems.append(f"implied sd is {sd_ratio:.2f}x the sample sd")
         if mean_gap > 3.0:
             problems.append(f"implied mean is {mean_gap:.1f} sample sd away from the data mean")
+
+        # One-sided jump intensity. Matching mean and sd is not enough: a fit can
+        # put essentially all jump mass on one side (C+ ~ 1e-10 means a return
+        # distribution with no upward jumps at all) and still reproduce the first
+        # two moments through mu. Such fits are economically meaningless and
+        # produce degenerate bands downstream.
+        alpha, C_p, C_m = best.params[0], best.params[1], best.params[2]
+        share = C_p / (C_p + C_m) if (C_p + C_m) > 0 else 0.5
+        best.history["C_plus_share"] = float(share)
+        if not (0.01 < share < 0.99):
+            problems.append(
+                f"jump intensity is one-sided (C+ carries {100*share:.3f}% of "
+                "C+ plus C-); the fit has collapsed onto a single jump direction")
+
+        # Near-Gaussian tempering. lambda * sd much above ~50 means the tempering
+        # length is a small fraction of a standard deviation, i.e. the law is
+        # Gaussian in all but name, and (lambda - iu)^alpha - lambda^alpha starts
+        # losing precision to cancellation.
+        lam_scaled = max(best.params[3], best.params[4]) * sd
+        best.history["lambda_sd"] = float(lam_scaled)
+        if lam_scaled > 50.0:
+            problems.append(
+                f"tempering rate is {lam_scaled:.0f} standard deviations "
+                "(effectively Gaussian, and numerically fragile)")
     except Exception:  # pragma: no cover - defensive
         pass
 

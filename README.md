@@ -19,14 +19,16 @@ pipeline.
 > **The European Physical Journal Special Topics**, 234(29): 9611–9629, 2025.
 > [doi:10.1140/epjs/s11734-025-01639-3](https://doi.org/10.1140/epjs/s11734-025-01639-3)
 
-**The original implementation is not mine either.** The RFIF core, the CTS
-characteristic functions, the COS inversion helper and the propagation pipeline
-were written by **Devharish N**, with the FCC modules contributed by
-**V J Aswini**. Upstream repository:
+**The implementation began as a course group project** by **Devharish N**,
+**V J Aswini** and **Sagnik Barman**, in which I contributed to the original
+codebase. Commits in the upstream history are under Devharish's account, which
+does not reflect the division of work. The FCC modules are V J Aswini's.
+Upstream repository:
 [github.com/devharish1371/RFIF](https://github.com/devharish1371/RFIF).
 
-This copy adds parameter estimation, correctness fixes and offline tests —
-see [What this copy adds](#what-this-copy-adds). Everything else is upstream work.
+This copy carries that work forward on my own: parameter estimation, correctness
+fixes, regime-conditioned noise and a validation suite — see
+[What this copy adds](#what-this-copy-adds) for exactly which files are which.
 
 ---
 
@@ -173,7 +175,33 @@ reproducible. `test_recfif.py` pins all of the above (7 tests).
 - **A command-line interface** so runs are reproducible without editing source,
   and `show_plot` / `save_plot` so the pipeline can run headless.
 
-### 4. `test_cts_fit.py` and `test_recfif.py` — offline test suites (new)
+### 4. `regime_fit.py` — regime-conditioned noise (new)
+
+The validation below shows a single time-invariant CTS law cannot calibrate across
+market regimes: 100.0% coverage when volatility is low, 84.4% when it is high.
+`regime_fit.py` fits one law per trailing-volatility tercile and lets each week
+draw its band from the regime it is actually in.
+
+```
+python evaluate_coverage.py --noise-fit-fraction 0.7 --noise-regimes 3
+```
+
+Two things are enforced so the comparison means something:
+
+- **Labels are causal.** Volatility is a trailing rolling standard deviation, so
+  week `t` is labelled from returns up to and including `t`.
+- **Thresholds come from the training slice only**, then are applied unchanged to
+  the held-out period. Computing tercile cut points over the full sample would
+  leak the future distribution of volatility into every label.
+
+A regime with fewer than `min_obs` weeks, or whose fit fails the sanity gates in
+`cts_fit`, falls back to the pooled fit rather than producing a degenerate one —
+splitting 524 training weeks three ways leaves ~175 each, which is workable but
+not generous.
+
+`test_regime_fit.py` pins the causality and no-leak properties (5 tests).
+
+### 5. `test_cts_fit.py`, `test_recfif.py`, `test_regime_fit.py` — offline test suites (new)
 
 Six tests that need no network access:
 
@@ -185,11 +213,12 @@ Six tests that need no network access:
 6. End-to-end propagation with a synthetic series
 
 ```bash
-python test_cts_fit.py     # Passed: 6/6
 python test_recfif.py      # Passed: 7/7
+python test_cts_fit.py     # Passed: 6/6
+python test_regime_fit.py  # Passed: 5/5
 ```
 
-### 5. Honest out-of-sample evaluation
+### 6. Honest out-of-sample evaluation
 
 `noise_fit_fraction` fits the CTS parameters on a leading slice and reports
 coverage separately on the held-out tail:
@@ -219,6 +248,7 @@ Requires Python 3.11+ and network access to Yahoo Finance for the price download
 ```bash
 python test_recfif.py                         # interpolant correctness
 python test_cts_fit.py                        # estimator + end-to-end
+python test_regime_fit.py                     # regime causality / no-leak
 python retune.py                              # re-tune d_vec (required once)
 python main.py --sample-every 4 --ncos 512    # fast smoke run
 python main.py                                # full run

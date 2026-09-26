@@ -29,7 +29,7 @@ def load_d_vec(path=None):
 def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_iters=250,
                      basis_grid=1400, m=2, d_vec=None, params_noise=None,
                      fit_noise=True, noise_fit_fraction=1.0, show_plot=True,
-                     save_plot=None):
+                     save_plot=None, noise_regimes=0, regime_window=26):
     """
     full_run: if False, will run a sampled quick run (sample_every > 1)
     sample_every: process every k-th week (useful to check quickly)
@@ -45,6 +45,12 @@ def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_it
     noise_fit_fraction: fraction of the sample (from the start) used to fit the
         CTS parameters. Values below 1.0 hold out the tail of the series so that
         band coverage can be reported out of sample.
+    noise_regimes: 0 or 1 fits a single CTS law for the whole sample. 3 splits
+        the training slice into trailing-volatility terciles and fits one law
+        per regime, so each week draws its band from the regime it is in.
+        Thresholds are estimated on the training slice only.
+    regime_window: rolling window, in weeks, for the trailing volatility that
+        defines the regimes.
     """
     print("Loading weekly NIFTY data...")
     df = fetch_weekly_nifty()
@@ -131,6 +137,31 @@ def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_it
     print("CTS params (alpha, C+, C-, lam+, lam-, mu):",
           tuple(float(v) for v in params_noise))
 
+    # Optional: condition the noise on a trailing-volatility regime instead of
+    # using one law for the whole sample. Thresholds come from the training
+    # slice only and volatility is backward-looking, so labels never see ahead.
+    week_params = None
+    regime_info = None
+    if noise_regimes and noise_regimes > 1 and fit_noise:
+        from regime_fit import assign_regimes, fit_cts_by_regime, params_per_week
+        print(f"\nConditioning the noise on {noise_regimes} trailing-volatility "
+              f"regimes (window={regime_window} weeks) ...")
+        train_labels, thresholds, _ = assign_regimes(
+            fit_returns, window=regime_window, n_regimes=noise_regimes)
+        regime_params = fit_cts_by_regime(
+            fit_returns, train_labels, n_regimes=noise_regimes,
+            pooled=params_noise, verbose=True)
+        # Label every week with the TRAINING thresholds.
+        all_labels, _, all_vol = assign_regimes(
+            returns, window=regime_window, thresholds=thresholds,
+            n_regimes=noise_regimes)
+        week_params = params_per_week(all_labels, regime_params)
+        regime_info = {"labels": all_labels, "thresholds": thresholds,
+                       "vol": all_vol, "params": regime_params}
+        print(f"\n[regime] week counts over the full sample: " +
+              "  ".join(f"{nm}={int((all_labels == g).sum())}"
+                        for g, nm in enumerate(("low", "mid", "high")[:noise_regimes])))
+
     # per-week propagation (optionally sampled)
     n = len(df)
     weeks_idx = np.arange(0, n, sample_every)
@@ -140,8 +171,10 @@ def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_it
         tval = df['t'].values[i]
         # compute omegas from basis functions
         omegas = np.array([float(fn(tval)) for fn in basis_fns])
+        # noise law for this week: regime-specific if conditioning is on
+        p_week = week_params[i] if week_params is not None else params_noise
         # define CF function for this week
-        cf_func = lambda u: weighted_cf_from_omegas(u, omegas, params_noise)
+        cf_func = lambda u, _p=p_week: weighted_cf_from_omegas(u, omegas, _p)
         # COS inversion (moderate resolution)
         _, pdf_w, cdf_w, inv_cdf_w = cos_invert_cf_from_cffunc(cf_func, Ncos=Ncos_per_week, L=8)
         q_low[i] = float(inv_cdf_w(0.025)); q_high[i] = float(inv_cdf_w(0.975))
@@ -216,6 +249,8 @@ def main_propagation(full_run=True, sample_every=1, Ncos_per_week=1024, basis_it
         'params_noise': tuple(float(v) for v in params_noise),
         'cts_fit': cts_result,
         'n_fit': n_fit,
+        'regime_info': regime_info,
+        'week_params': week_params,
     }
 
 # ----------------------------
@@ -237,6 +272,10 @@ if __name__ == "__main__":
                              "holds out the last 30%% for honest coverage")
     parser.add_argument("--legacy-noise", action="store_true",
                         help="use the original hardcoded CTS parameters instead of fitting")
+    parser.add_argument("--noise-regimes", type=int, default=0,
+                        help="fit one CTS law per trailing-volatility regime (try 3)")
+    parser.add_argument("--regime-window", type=int, default=26,
+                        help="rolling window in weeks for the volatility regimes")
     parser.add_argument("--save-plot", default=None, help="path to write the figure")
     parser.add_argument("--no-show", action="store_true", help="do not open a plot window")
     args = parser.parse_args()
@@ -252,5 +291,7 @@ if __name__ == "__main__":
         noise_fit_fraction=args.noise_fit_fraction,
         show_plot=not args.no_show,
         save_plot=args.save_plot,
+        noise_regimes=args.noise_regimes,
+        regime_window=args.regime_window,
     )
     print("Done. Coverage:", out['coverage'])

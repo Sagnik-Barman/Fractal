@@ -336,6 +336,9 @@ def main():
     parser.add_argument("--m", type=int, default=2)
     parser.add_argument("--noise-fit-fraction", type=float, default=0.7)
     parser.add_argument("--legacy-noise", action="store_true")
+    parser.add_argument("--noise-regimes", type=int, default=0,
+                        help="fit one CTS law per trailing-volatility regime (try 3)")
+    parser.add_argument("--regime-window", type=int, default=26)
     parser.add_argument("--save-plot", default=None)
     args = parser.parse_args()
 
@@ -351,6 +354,8 @@ def main():
         noise_fit_fraction=args.noise_fit_fraction,
         show_plot=False,
         save_plot=args.save_plot,
+        noise_regimes=args.noise_regimes,
+        regime_window=args.regime_window,
     )
     print()
     coverage_report(out)

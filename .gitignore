@@ -4,3 +4,5 @@ __pycache__/
 results/
 RFIF/
 Fractal/
+
+d_vec_opt.*.npy
